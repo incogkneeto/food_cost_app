@@ -279,7 +279,7 @@ if HAS_STREAMLIT:
             st.session_state["chat_log"].append({"role":"user","text":prompt})
             response = ai_handle(prompt)
             st.session_state["chat_log"].append({"role":"assistant","text":response})
-            st.experimental_rerun()
+            # st.experimental_rerun() removed to avoid AttributeError
 
     st.sidebar.markdown("---")
     st.sidebar.markdown("Made with ❤️")
