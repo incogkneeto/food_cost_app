@@ -59,11 +59,20 @@ TABLE_SPECS: Dict[str, Dict[str, List[str]]] = {
     "inventory_txn": {"columns":["txn_id","date","ingredient_id","qty_grams_change","reason","note"]},
     "labor_shift": {"columns":["shift_id","emp_email","start_time","end_time","hours","labor_cost"]},
 }
+# Unit conversion mapping
+UNIT_TO_GRAMS = {
+    "lb": 453.592,
+    "oz": 28.3495,
+    "kg": 1000,
+    "g": 1,
+    "gal": 3785.41,
+    "ml": 1,
+    "l": 1000,
+}
 
-# Unit conversion
-UNIT_TO_GRAMS = {"lb":453.592,"oz":28.3495,"kg":1000,"g":1,"gal":3785.41,"ml":1,"l":1000}
-
-# Data helper functions
+#----------------------------------------------------------------------------#
+# Data helper functions                                                        #
+#----------------------------------------------------------------------------#
 
 def _table_path(name: str) -> Path:
     return DATA_DIR / f"{name}.csv"
@@ -76,7 +85,7 @@ def load_table(name: str) -> pd.DataFrame:
         df = pd.read_csv(path)
     else:
         df = pd.DataFrame(columns=cols)
-    # Ensure schema
+    # Ensure all columns present
     for c in cols:
         if c not in df.columns:
             df[c] = "" if c in {"name","vendor","purchase_unit"} else 0
@@ -106,13 +115,19 @@ def calculate_cost_columns(row: pd.Series) -> pd.Series:
 
 
 def current_stock() -> pd.DataFrame:
-    inv = (st.session_state.get("tables", {}).get("inventory_txn") if HAS_STREAMLIT else load_table("inventory_txn"))
-    ing = (st.session_state.get("tables", {}).get("ingredients") if HAS_STREAMLIT else load_table("ingredients"))
+    inv = (st.session_state.get("tables", {}).get("inventory_txn")
+           if HAS_STREAMLIT and "inventory_txn" in st.session_state.get("tables", {})
+           else load_table("inventory_txn"))
+    ing = (st.session_state.get("tables", {}).get("ingredients")
+           if HAS_STREAMLIT and "ingredients" in st.session_state.get("tables", {})
+           else load_table("ingredients"))
     stock = inv.groupby("ingredient_id")["qty_grams_change"].sum().reset_index()
     stock.rename(columns={"ingredient_id":"item_id","qty_grams_change":"on_hand_grams"}, inplace=True)
-    return ing[["item_id","name"]].merge(stock, on="item_id", how="left").fillna({"on_hand_grams":0})
+    return ing[["item_id","name"]].merge(stock, on="item_id", how="left").fillna({"on_hand_grams": 0})
 
-# AI command parser & insights
+#----------------------------------------------------------------------------#
+# AI command parser                                                            #
+#----------------------------------------------------------------------------#
 
 def ai_handle(text: str) -> str:
     t = text.lower().strip()
@@ -140,26 +155,30 @@ def ai_handle(text: str) -> str:
         st.session_state["tables"]["ingredients"] = df
         save_table("ingredients", df)
         return f"✅ Recorded {qty} {unit} {nm.title()} @ ${pr}"
-    # Fallback to GPT
+    # GPT fallback
     if HAS_OPENAI and os.getenv("OPENAI_API_KEY"):
         resp = openai.ChatCompletion.create(
             model="gpt-4o",
             messages=[
-                {"role":"system","content":"You are an assistant for a food-truck cost app."},
-                {"role":"user","content":text},
+                {"role":"system","content":"You are a food-truck cost app assistant."},
+                {"role":"user","content": text},
             ],
         )
         return resp.choices[0].message["content"].strip()
     return "🤔 Sorry, I couldn’t parse that."
 
-# Transcription helper
+#----------------------------------------------------------------------------#
+# Audio transcription helper                                                   #
+#----------------------------------------------------------------------------#
 
 def transcribe_audio(audio_file) -> str:
     if not (HAS_OPENAI and audio_file):
         return ""
     return openai.Audio.transcribe("whisper-1", audio_file)
 
-# AI insights
+#----------------------------------------------------------------------------#
+# AI Insights                                                                  #
+#----------------------------------------------------------------------------#
 
 def get_ai_insights(df: pd.DataFrame) -> str:
     if not (HAS_OPENAI and os.getenv("OPENAI_API_KEY")):
@@ -168,21 +187,26 @@ def get_ai_insights(df: pd.DataFrame) -> str:
         model="gpt-4o",
         messages=[
             {"role":"system","content":"You are a food-cost analyst."},
-            {"role":"user","content":df.to_csv(index=False)},
+            {"role":"user","content": df.to_csv(index=False)},
         ],
     )
     return resp.choices[0].message["content"].strip()
 
+#----------------------------------------------------------------------------#
 # Streamlit UI
+#----------------------------------------------------------------------------#
 if HAS_STREAMLIT:
     st.set_page_config(page_title="Food Cost App", page_icon="🍔", layout="wide")
+    # Initialize tables and chat log
     if "tables" not in st.session_state:
         st.session_state["tables"] = {name: load_table(name) for name in TABLE_SPECS}
         st.session_state["chat_log"] = []
+
     def get_table(name: str) -> pd.DataFrame:
         return st.session_state["tables"][name]
     def persist(name: str) -> None:
         save_table(name, get_table(name))
+
     menu = st.sidebar.radio(
         "Navigation",
         [
@@ -195,6 +219,7 @@ if HAS_STREAMLIT:
             "AI Assistant",
         ],
     )
+
     if menu == "Ingredients":
         st.title("🧾 Ingredients")
         df = get_table("ingredients")
@@ -204,6 +229,7 @@ if HAS_STREAMLIT:
             st.session_state["tables"]["ingredients"] = ed
             persist("ingredients")
             st.success("Saved")
+
     elif menu == "Recipes":
         st.title("📖 Recipes")
         df = get_table("recipes")
@@ -212,12 +238,15 @@ if HAS_STREAMLIT:
             st.session_state["tables"]["recipes"] = ed
             persist("recipes")
             st.success("Saved")
+
     elif menu == "Sales (log)":
         st.title("💵 Sales Log")
         st.warning("Stub: connect sales to inventory.")
+
     elif menu == "Inventory Counts":
         st.title("📦 Inventory Counts")
         st.warning("Stub: add count form and variance.")
+
     elif menu == "Labor Shifts":
         st.title("⏱️ Labor Shifts")
         df = get_table("labor_shift")
@@ -226,6 +255,7 @@ if HAS_STREAMLIT:
             st.session_state["tables"]["labor_shift"] = ed
             persist("labor_shift")
             st.success("Saved")
+
     elif menu == "AI Insights":
         st.title("🤖 AI Insights")
         df = get_table("ingredients")
@@ -233,6 +263,7 @@ if HAS_STREAMLIT:
             st.info("Add ingredients first.")
         elif st.button("Generate Insights"):
             st.markdown(get_ai_insights(df))
+
     elif menu == "AI Assistant":
         st.title("🤖 Voice & Text Assistant")
         for chat in st.session_state["chat_log"]:
@@ -249,6 +280,7 @@ if HAS_STREAMLIT:
             response = ai_handle(prompt)
             st.session_state["chat_log"].append({"role":"assistant","text":response})
             st.experimental_rerun()
+
     st.sidebar.markdown("---")
     st.sidebar.markdown("Made with ❤️")
 
