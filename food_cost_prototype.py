@@ -93,10 +93,11 @@ def calculate_cost_columns(row: pd.Series) -> pd.Series:
     qty = float(row.get("purchase_qty",0) or 0)
     price = float(row.get("purchase_price",0) or 0)
     yp = float(row.get("yield_percent",1) or 1)
-    if yp>1: yp /= 100.0
+    if yp > 1:
+        yp /= 100.0
     grams = qty * UNIT_TO_GRAMS.get(unit,1)
-    cpg = price/grams if grams else 0.0
-    ncpg = cpg/yp if yp else 0.0
+    cpg = price / grams if grams else 0.0
+    ncpg = cpg / yp if yp else 0.0
     row["cost_per_gram"] = round(cpg,4)
     row["net_cost_per_gram"] = round(ncpg,4)
     row["last_updated"] = datetime.utcnow().isoformat()
@@ -117,8 +118,8 @@ def current_stock() -> pd.DataFrame:
 def ai_handle(text: str) -> str:
     t = text.lower().strip()
     if t.startswith("how many") and "left" in t:
-        nm = t.replace("how many",""").replace("left",""").strip()
-        row = current_stock()[lambda df: df["name"].str.lower()==nm]
+        nm = t.replace("how many","").replace("left","").strip()
+        row = current_stock()[lambda df: df["name"].str.lower() == nm]
         if not row.empty:
             return f"{nm.title()} on hand: **{int(row.iloc[0]['on_hand_grams'])} g**"
     m = re.match(r"add\s+(\d+[.,]?\d*)\s*(lb|oz|kg|g)\s+([\w\s]+)\s*@\s*\$?(\d+[.,]?\d*)",t)
@@ -126,21 +127,24 @@ def ai_handle(text: str) -> str:
         qty,unit,nm,pr = m.groups()
         qty,pr = float(qty.replace(",",".")), float(pr.replace(",","."))
         df = st.session_state["tables"]["ingredients"]
-        r = df[df["name"].str.lower()==nm]
+        r = df[df["name"].str.lower() == nm]
         if r.empty:
             df = pd.concat([df,pd.DataFrame([{"item_id":f"NEW{len(df)+1}","name":nm.title(),"purchase_unit":unit,"purchase_qty":qty,"purchase_price":pr,"yield_percent":1.0}])],ignore_index=True)
         else:
-            idx = r.index[0]; df.loc[idx,["purchase_unit","purchase_qty","purchase_price"]] = [unit,qty,pr]
+            idx = r.index[0]
+            df.loc[idx,["purchase_unit","purchase_qty","purchase_price"]] = [unit,qty,pr]
         df = df.apply(calculate_cost_columns,axis=1)
-        st.session_state["tables"]["ingredients"] = df; save_table("ingredients",df)
+        st.session_state["tables"]["ingredients"] = df
+        save_table("ingredients",df)
         return f"✅ Recorded {qty} {unit} {nm.title()} @ ${pr}"
     if HAS_OPENAI and os.getenv("OPENAI_API_KEY"):
         resp = openai.ChatCompletion.create(model="gpt-4o",messages=[{"role":"system","content":"You are an assistant..."},{"role":"user","content":text}])
         return resp.choices[0].message["content"].strip()
     return "🤔 Sorry, I couldn’t parse that."
 
+
 def get_ai_insights(df: pd.DataFrame) -> str:
-    if not(HAS_OPENAI and os.getenv("OPENAI_API_KEY")):
+    if not (HAS_OPENAI and os.getenv("OPENAI_API_KEY")):
         return "AI not configured – set OPENAI_API_KEY to enable insights."
     resp = openai.ChatCompletion.create(model="gpt-4o",messages=[{"role":"system","content":"You are a food-cost analyst..."},{"role":"user","content":df.to_csv(index=False)}])
     return resp.choices[0].message["content"].strip()
@@ -150,40 +154,96 @@ def get_ai_insights(df: pd.DataFrame) -> str:
 #----------------------------------------------------------------------------#
 if HAS_STREAMLIT:
     st.set_page_config(page_title="Food Cost App",page_icon="🍔",layout="wide")
+
     if "tables" not in st.session_state:
         st.session_state["tables"] = {name: load_table(name) for name in TABLE_SPECS}
         st.session_state["chat_log"] = []
-    def get_table(name): return st.session_state["tables"][name]
-    def persist(name): save_table(name,get_table(name))
-    menu = st.sidebar.radio("Navigation",["Ingredients","Recipes","Sales (log)","Inventory Counts","Labor Shifts","AI Insights","AI Assistant"])
-    if menu=="Ingredients":
+
+    def get_table(name: str) -> pd.DataFrame:
+        return st.session_state["tables"][name]
+
+    def persist(name: str) -> None:
+        save_table(name, get_table(name))
+
+    menu = st.sidebar.radio(
+        "Navigation",
+        [
+            "Ingredients",
+            "Recipes",
+            "Sales (log)",
+            "Inventory Counts",
+            "Labor Shifts",
+            "AI Insights",
+            "AI Assistant",
+        ],
+    )
+
+    if menu == "Ingredients":
         st.title("🧾 Ingredients")
-        df=get_table("ingredients"); ed=st.data_editor(df,num_rows="dynamic",use_container_width=True)
-        if st.button("Save Changes"): ed=ed.apply(calculate_cost_columns,axis=1); st.session_state["tables"]["ingredients"]=ed; persist("ingredients"); st.success("Saved")
-    elif menu=="Recipes":
-        st.title("📖 Recipes"); df=get_table("recipes"); ed=st.data_editor(df,num_rows="dynamic",use_container_width=True)
-        if st.button("Save Recipes"): st.session_state["tables"]["recipes"]=ed; persist("recipes"); st.success("Saved")
-    elif menu=="Sales (log)": st.title("💵 Sales Log"); st.warning("Sales-to-inventory stub")
-    elif menu=="Inventory Counts": st.title("📦 Inventory Counts"); st.warning("Count form stub")
-    elif menu=="Labor Shifts": st.title("⏱️ Labor Shifts"); df=get_table("labor_shift"); ed=st.data_editor(df,num_rows="dynamic",use_container_width=True)
-        if st.button("Save Shifts"): st.session_state["tables"]["labor_shift"]=ed; persist("labor_shift"); st.success("Saved")
-    elif menu=="AI Insights":
-        st.title("🤖 AI Insights"); df=get_table("ingredients")
-        if df.empty: st.info("Add ingredients first.")
-        elif st.button("Generate Insights"): st.markdown(get_ai_insights(df))
-    elif menu=="AI Assistant":
-        st.title("🤖 Assistant");
-        for chat in st.session_state["chat_log"]: st.chat_message("assistant" if chat["role"]=="bot" else "user").markdown(chat["text"])
-        prompt=st.chat_input("Ask...")
-        if prompt: st.session_state["chat_log"].append({"role":"user","text":prompt}); ans=ai_handle(prompt); st.session_state["chat_log"].append({"role":"bot","text":ans}); st.rerun()
-    st.sidebar.markdown("---"); st.sidebar.markdown("Made with ❤️")
+        df = get_table("ingredients")
+        ed = st.data_editor(df, num_rows="dynamic", use_container_width=True)
+        if st.button("Save Changes"):
+            ed = ed.apply(calculate_cost_columns, axis=1)
+            st.session_state["tables"]["ingredients"] = ed
+            persist("ingredients")
+            st.success("Saved")
+
+    elif menu == "Recipes":
+        st.title("📖 Recipes")
+        df = get_table("recipes")
+        ed = st.data_editor(df, num_rows="dynamic", use_container_width=True)
+        if st.button("Save Recipes"):
+            st.session_state["tables"]["recipes"] = ed
+            persist("recipes")
+            st.success("Saved")
+
+    elif menu == "Sales (log)":
+        st.title("💵 Sales Log")
+        st.warning("Sales-to-inventory stub")
+
+    elif menu == "Inventory Counts":
+        st.title("📦 Inventory Counts")
+        st.warning("Count form stub")
+
+    elif menu == "Labor Shifts":
+        st.title("⏱️ Labor Shifts")
+        df = get_table("labor_shift")
+        ed = st.data_editor(df, num_rows="dynamic", use_container_width=True)
+        if st.button("Save Shifts"):
+            st.session_state["tables"]["labor_shift"] = ed
+            persist("labor_shift")
+            st.success("Saved")
+
+    elif menu == "AI Insights":
+        st.title("🤖 AI Insights")
+        df = get_table("ingredients")
+        if df.empty:
+            st.info("Add ingredients first.")
+        elif st.button("Generate Insights"):
+            st.markdown(get_ai_insights(df))
+
+    elif menu == "AI Assistant":
+        st.title("🤖 Assistant")
+        for chat in st.session_state["chat_log"]:
+            st.chat_message("assistant" if chat["role"] == "bot" else "user").markdown(chat["text"])
+        prompt = st.chat_input("Ask...")
+        if prompt:
+            st.session_state["chat_log"].append({"role": "user", "text": prompt})
+            ans = ai_handle(prompt)
+            st.session_state["chat_log"].append({"role": "bot", "text": ans})
+            st.rerun()
+
+    st.sidebar.markdown("---")
+    st.sidebar.markdown("Made with ❤️")
 
 #----------------------------------------------------------------------------#
 # Self-tests                                                                 #
 #----------------------------------------------------------------------------#
-if __name__=="__main__" and not HAS_STREAMLIT:
-    ing=load_table("ingredients"); assert isinstance(ing,pd.DataFrame)
-    row=pd.Series({"purchase_unit":"g","purchase_qty":100,"purchase_price":2,"yield_percent":100})
-    calc=calculate_cost_columns(row.copy()); assert calc["cost_per_gram"]==0.02
+if __name__ == "__main__" and not HAS_STREAMLIT:
+    ing = load_table("ingredients")
+    assert isinstance(ing, pd.DataFrame)
+    row = pd.Series({"purchase_unit": "g", "purchase_qty": 100, "purchase_price": 2, "yield_percent": 100})
+    calc = calculate_cost_columns(row.copy())
+    assert calc["cost_per_gram"] == 0.02
     print("All tests passed")
 Overwrite with full UI + headless fallback prototype
