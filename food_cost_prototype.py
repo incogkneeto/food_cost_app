@@ -1,10 +1,9 @@
-"""Food Cost Prototype – works with or without Streamlit
+"""Food Cost Prototype – Streamlit UI with headless fallback
 ====================================================
-This script powers a food-cost app.  When the **streamlit** package is
-installed, it spins up a full interactive UI.  In head-less or sandboxed
-contexts (like many test runners), it swaps Streamlit for a tiny *dummy*
-namespace so that the data-layer logic can still be imported and tested
-without raising errors.
+When run normally with Streamlit installed, this script launches an interactive
+web app for managing ingredients, recipes, inventory, labor, and AI-powered
+commands/insights. In headless/test environments, it degrades gracefully:
+helper functions can be imported and unit-tested without errors.
 """
 
 import os
@@ -15,29 +14,26 @@ from typing import Dict, List
 
 import pandas as pd
 
-#-----------------------------------------------------------------------------#
-# Attempt to import Streamlit; fallback to dummy for non-UI contexts         #
-#-----------------------------------------------------------------------------#
+#----------------------------------------------------------------------------#
+# Attempt to import Streamlit; fallback to dummy for non-UI contexts           #
+#----------------------------------------------------------------------------#
 try:
     import streamlit as st
     HAS_STREAMLIT = True
 except ModuleNotFoundError:
-    def _noop(*args, **kwargs):
-        return None
+    def _noop(*args, **kwargs): return None
     class _DummyStreamlit:
         def __init__(self):
             self.sidebar = self
             self.session_state = {}
-        def __getattr__(self, name):
-            return _noop
-        def __call__(self, *args, **kwargs):
-            return None
+        def __getattr__(self, name): return _noop
+        def __call__(self, *args, **kwargs): return None
     st = _DummyStreamlit()  # type: ignore
     HAS_STREAMLIT = False
 
-#-----------------------------------------------------------------------------#
-# Attempt to import OpenAI; fallback if not available                       #
-#-----------------------------------------------------------------------------#
+#----------------------------------------------------------------------------#
+# Attempt to import OpenAI; fallback if unavailable                          #
+#----------------------------------------------------------------------------#
 try:
     import openai
     HAS_OPENAI = True
@@ -45,9 +41,9 @@ except ModuleNotFoundError:
     openai = None  # type: ignore
     HAS_OPENAI = False
 
-#-----------------------------------------------------------------------------#
-# Configuration constants                                                   #
-#-----------------------------------------------------------------------------#
+#----------------------------------------------------------------------------#
+# Configuration constants                                                     #
+#----------------------------------------------------------------------------#
 try:
     BASE_DIR = Path(__file__).parent
 except NameError:
@@ -68,20 +64,18 @@ TABLE_SPECS: Dict[str, Dict[str, List[str]]] = {
 }
 UNIT_TO_GRAMS = {"lb":453.592,"oz":28.3495,"kg":1000,"g":1,"gal":3785.41,"ml":1,"l":1000}
 
-#-----------------------------------------------------------------------------#
-# Data helpers                                                               #
-#-----------------------------------------------------------------------------#
+#----------------------------------------------------------------------------#
+# Data layer helpers                                                          #
+#----------------------------------------------------------------------------#
 
 def _table_path(name: str) -> Path:
     return DATA_DIR / f"{name}.csv"
 
 
 def load_table(name: str) -> pd.DataFrame:
-    """Load a table from disk, creating it with the latest schema if missing."""
     cols = TABLE_SPECS[name]["columns"]
     path = _table_path(name)
     df = pd.read_csv(path) if path.exists() else pd.DataFrame(columns=cols)
-    # ensure schema
     for c in cols:
         if c not in df.columns:
             df[c] = "" if c in {"name","vendor","purchase_unit"} else 0
@@ -95,90 +89,101 @@ def save_table(name: str, df: pd.DataFrame) -> None:
 
 
 def calculate_cost_columns(row: pd.Series) -> pd.Series:
-    """Compute cost_per_gram & net_cost_per_gram for an ingredient row."""
-    unit = row.get("purchase_unit", "")
-    qty = float(row.get("purchase_qty", 0) or 0)
-    price = float(row.get("purchase_price", 0) or 0)
-    yp = float(row.get("yield_percent", 1) or 1)
-    if yp > 1:
-        yp /= 100.0
-    grams = qty * UNIT_TO_GRAMS.get(unit, 1)
-    cpg = price / grams if grams else 0.0
-    ncpg = cpg / yp if yp else 0.0
-    row["cost_per_gram"] = round(cpg, 4)
-    row["net_cost_per_gram"] = round(ncpg, 4)
+    unit = row.get("purchase_unit","")
+    qty = float(row.get("purchase_qty",0) or 0)
+    price = float(row.get("purchase_price",0) or 0)
+    yp = float(row.get("yield_percent",1) or 1)
+    if yp>1: yp /= 100.0
+    grams = qty * UNIT_TO_GRAMS.get(unit,1)
+    cpg = price/grams if grams else 0.0
+    ncpg = cpg/yp if yp else 0.0
+    row["cost_per_gram"] = round(cpg,4)
+    row["net_cost_per_gram"] = round(ncpg,4)
     row["last_updated"] = datetime.utcnow().isoformat()
     return row
 
 
 def current_stock() -> pd.DataFrame:
-    """Return on-hand grams per ingredient."""
-    inv = (st.session_state.get("tables", {}).get("inventory_txn") if HAS_STREAMLIT and "tables" in st.session_state else load_table("inventory_txn"))
-    ing = (st.session_state.get("tables", {}).get("ingredients") if HAS_STREAMLIT and "tables" in st.session_state else load_table("ingredients"))
+    inv = (st.session_state.get("tables",{}).get("inventory_txn") if HAS_STREAMLIT else load_table("inventory_txn"))
+    ing = (st.session_state.get("tables",{}).get("ingredients")    if HAS_STREAMLIT else load_table("ingredients"))
     stock = inv.groupby("ingredient_id")["qty_grams_change"].sum().reset_index()
     stock.rename(columns={"ingredient_id":"item_id","qty_grams_change":"on_hand_grams"}, inplace=True)
-    return ing[["item_id","name"]].merge(stock, on="item_id", how="left").fillna({"on_hand_grams":0})
+    return ing[["item_id","name"]].merge(stock,on="item_id",how="left").fillna({"on_hand_grams":0})
 
-#-----------------------------------------------------------------------------#
-# AI COMMAND PARSER & INSIGHTS                                                 #
-#-----------------------------------------------------------------------------#
+#----------------------------------------------------------------------------#
+# AI command parser & insights                                                #
+#----------------------------------------------------------------------------#
 
 def ai_handle(text: str) -> str:
     t = text.lower().strip()
     if t.startswith("how many") and "left" in t:
-        nm = t.replace("how many", "").replace("left", "").strip()
-        row = current_stock()[lambda df: df["name"].str.lower() == nm]
+        nm = t.replace("how many",""").replace("left",""").strip()
+        row = current_stock()[lambda df: df["name"].str.lower()==nm]
         if not row.empty:
             return f"{nm.title()} on hand: **{int(row.iloc[0]['on_hand_grams'])} g**"
-    m = re.match(r"add\s+(\d+[.,]?\d*)\s*(lb|oz|kg|g)\s+([\w\s]+)\s*@\s*\$?(\d+[.,]?\d*)", t)
+    m = re.match(r"add\s+(\d+[.,]?\d*)\s*(lb|oz|kg|g)\s+([\w\s]+)\s*@\s*\$?(\d+[.,]?\d*)",t)
     if m and HAS_STREAMLIT:
-        qty, unit, nm, pr = m.groups()
-        qty, pr = float(qty.replace(",", ".")), float(pr.replace(",", "."))
+        qty,unit,nm,pr = m.groups()
+        qty,pr = float(qty.replace(",",".")), float(pr.replace(",","."))
         df = st.session_state["tables"]["ingredients"]
-        r = df[df["name"].str.lower() == nm]
+        r = df[df["name"].str.lower()==nm]
         if r.empty:
-            new = {"item_id": f"NEW{len(df)+1}", "name": nm.title().strip(),
-                   "purchase_unit": unit, "purchase_qty": qty, "purchase_price": pr, "yield_percent": 1.0}
-            df = pd.concat([df, pd.DataFrame([new])], ignore_index=True)
+            df = pd.concat([df,pd.DataFrame([{"item_id":f"NEW{len(df)+1}","name":nm.title(),"purchase_unit":unit,"purchase_qty":qty,"purchase_price":pr,"yield_percent":1.0}])],ignore_index=True)
         else:
-            idx = r.index[0]
-            df.loc[idx, ["purchase_unit","purchase_qty","purchase_price"]] = [unit, qty, pr]
-        df = df.apply(calculate_cost_columns, axis=1)
-        st.session_state["tables"]["ingredients"] = df
-        save_table("ingredients", df)
+            idx = r.index[0]; df.loc[idx,["purchase_unit","purchase_qty","purchase_price"]] = [unit,qty,pr]
+        df = df.apply(calculate_cost_columns,axis=1)
+        st.session_state["tables"]["ingredients"] = df; save_table("ingredients",df)
         return f"✅ Recorded {qty} {unit} {nm.title()} @ ${pr}"
     if HAS_OPENAI and os.getenv("OPENAI_API_KEY"):
-        resp = openai.ChatCompletion.create(
-            model="gpt-4o",
-            messages=[
-                {"role":"system","content":"You are an assistant for a food-truck cost app. Return concise answers."},
-                {"role":"user","content": text},
-            ],
-        )
+        resp = openai.ChatCompletion.create(model="gpt-4o",messages=[{"role":"system","content":"You are an assistant..."},{"role":"user","content":text}])
         return resp.choices[0].message["content"].strip()
     return "🤔 Sorry, I couldn’t parse that."
 
 def get_ai_insights(df: pd.DataFrame) -> str:
-    if not (HAS_OPENAI and os.getenv("OPENAI_API_KEY")):
+    if not(HAS_OPENAI and os.getenv("OPENAI_API_KEY")):
         return "AI not configured – set OPENAI_API_KEY to enable insights."
-    resp = openai.ChatCompletion.create(
-        model="gpt-4o",
-        messages=[
-            {"role":"system","content":"You are a food-cost analyst. Suggest cost-control tips."},
-            {"role":"user","content": df.to_csv(index=False)},
-        ],
-    )
+    resp = openai.ChatCompletion.create(model="gpt-4o",messages=[{"role":"system","content":"You are a food-cost analyst..."},{"role":"user","content":df.to_csv(index=False)}])
     return resp.choices[0].message["content"].strip()
 
-#-----------------------------------------------------------------------------#
-# Basic self-tests                                                             #
-#-----------------------------------------------------------------------------#
-if __name__ == "__main__":
-    # Test data-layer functions
-    ing = load_table("ingredients")
-    assert isinstance(ing, pd.DataFrame), "load_table should return DataFrame"
-    # Test cost calculation logic
-    test_row = pd.Series({"purchase_unit":"g","purchase_qty":100,"purchase_price":2,"yield_percent":100})
-    calc = calculate_cost_columns(test_row.copy())
-    assert calc["cost_per_gram"] == 0.02, f"Expected 0.02, got {calc['cost_per_gram']}"
-    print("All basic tests passed.")
+#----------------------------------------------------------------------------#
+# Streamlit UI                                                                #
+#----------------------------------------------------------------------------#
+if HAS_STREAMLIT:
+    st.set_page_config(page_title="Food Cost App",page_icon="🍔",layout="wide")
+    if "tables" not in st.session_state:
+        st.session_state["tables"] = {name: load_table(name) for name in TABLE_SPECS}
+        st.session_state["chat_log"] = []
+    def get_table(name): return st.session_state["tables"][name]
+    def persist(name): save_table(name,get_table(name))
+    menu = st.sidebar.radio("Navigation",["Ingredients","Recipes","Sales (log)","Inventory Counts","Labor Shifts","AI Insights","AI Assistant"])
+    if menu=="Ingredients":
+        st.title("🧾 Ingredients")
+        df=get_table("ingredients"); ed=st.data_editor(df,num_rows="dynamic",use_container_width=True)
+        if st.button("Save Changes"): ed=ed.apply(calculate_cost_columns,axis=1); st.session_state["tables"]["ingredients"]=ed; persist("ingredients"); st.success("Saved")
+    elif menu=="Recipes":
+        st.title("📖 Recipes"); df=get_table("recipes"); ed=st.data_editor(df,num_rows="dynamic",use_container_width=True)
+        if st.button("Save Recipes"): st.session_state["tables"]["recipes"]=ed; persist("recipes"); st.success("Saved")
+    elif menu=="Sales (log)": st.title("💵 Sales Log"); st.warning("Sales-to-inventory stub")
+    elif menu=="Inventory Counts": st.title("📦 Inventory Counts"); st.warning("Count form stub")
+    elif menu=="Labor Shifts": st.title("⏱️ Labor Shifts"); df=get_table("labor_shift"); ed=st.data_editor(df,num_rows="dynamic",use_container_width=True)
+        if st.button("Save Shifts"): st.session_state["tables"]["labor_shift"]=ed; persist("labor_shift"); st.success("Saved")
+    elif menu=="AI Insights":
+        st.title("🤖 AI Insights"); df=get_table("ingredients")
+        if df.empty: st.info("Add ingredients first.")
+        elif st.button("Generate Insights"): st.markdown(get_ai_insights(df))
+    elif menu=="AI Assistant":
+        st.title("🤖 Assistant");
+        for chat in st.session_state["chat_log"]: st.chat_message("assistant" if chat["role"]=="bot" else "user").markdown(chat["text"])
+        prompt=st.chat_input("Ask...")
+        if prompt: st.session_state["chat_log"].append({"role":"user","text":prompt}); ans=ai_handle(prompt); st.session_state["chat_log"].append({"role":"bot","text":ans}); st.rerun()
+    st.sidebar.markdown("---"); st.sidebar.markdown("Made with ❤️")
+
+#----------------------------------------------------------------------------#
+# Self-tests                                                                 #
+#----------------------------------------------------------------------------#
+if __name__=="__main__" and not HAS_STREAMLIT:
+    ing=load_table("ingredients"); assert isinstance(ing,pd.DataFrame)
+    row=pd.Series({"purchase_unit":"g","purchase_qty":100,"purchase_price":2,"yield_percent":100})
+    calc=calculate_cost_columns(row.copy()); assert calc["cost_per_gram"]==0.02
+    print("All tests passed")
+Overwrite with full UI + headless fallback prototype
