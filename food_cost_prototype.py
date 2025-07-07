@@ -106,7 +106,7 @@ def calculate_cost_columns(row: pd.Series) -> pd.Series:
 
 def current_stock() -> pd.DataFrame:
     inv = (st.session_state.get("tables",{}).get("inventory_txn") if HAS_STREAMLIT else load_table("inventory_txn"))
-    ing = (st.session_state.get("tables",{}).get("ingredients")    if HAS_STREAMLIT else load_table("ingredients"))
+    ing = (st.session_state.get("tables",{}).get("ingredients") if HAS_STREAMLIT else load_table("ingredients"))
     stock = inv.groupby("ingredient_id")["qty_grams_change"].sum().reset_index()
     stock.rename(columns={"ingredient_id":"item_id","qty_grams_change":"on_hand_grams"}, inplace=True)
     return ing[["item_id","name"]].merge(stock,on="item_id",how="left").fillna({"on_hand_grams":0})
@@ -118,11 +118,11 @@ def current_stock() -> pd.DataFrame:
 def ai_handle(text: str) -> str:
     t = text.lower().strip()
     if t.startswith("how many") and "left" in t:
-        nm = t.replace("how many","").replace("left","").strip()
+        nm = t.replace("how many",""").replace("left",""").strip()
         row = current_stock()[lambda df: df["name"].str.lower() == nm]
         if not row.empty:
             return f"{nm.title()} on hand: **{int(row.iloc[0]['on_hand_grams'])} g**"
-    m = re.match(r"add\s+(\d+[.,]?\d*)\s*(lb|oz|kg|g)\s+([\w\s]+)\s*@\s*\$?(\d+[.,]?\d*)",t)
+    m = re.match(r"add\s+(\d+[.,]?\d*)\s*(lb|oz|kg|g)\s+([\w\s]+)\s*@\s*\$?(\d+[.,]?\d*)", t)
     if m and HAS_STREAMLIT:
         qty,unit,nm,pr = m.groups()
         qty,pr = float(qty.replace(",",".")), float(pr.replace(",","."))
@@ -138,7 +138,7 @@ def ai_handle(text: str) -> str:
         save_table("ingredients",df)
         return f"✅ Recorded {qty} {unit} {nm.title()} @ ${pr}"
     if HAS_OPENAI and os.getenv("OPENAI_API_KEY"):
-        resp = openai.ChatCompletion.create(model="gpt-4o",messages=[{"role":"system","content":"You are an assistant..."},{"role":"user","content":text}])
+        resp = openai.ChatCompletion.create(model="gpt-4o", messages=[{"role":"system","content":"You are an assistant..."},{"role":"user","content":text}])
         return resp.choices[0].message["content"].strip()
     return "🤔 Sorry, I couldn’t parse that."
 
@@ -146,14 +146,14 @@ def ai_handle(text: str) -> str:
 def get_ai_insights(df: pd.DataFrame) -> str:
     if not (HAS_OPENAI and os.getenv("OPENAI_API_KEY")):
         return "AI not configured – set OPENAI_API_KEY to enable insights."
-    resp = openai.ChatCompletion.create(model="gpt-4o",messages=[{"role":"system","content":"You are a food-cost analyst..."},{"role":"user","content":df.to_csv(index=False)}])
+    resp = openai.ChatCompletion.create(model="gpt-4o", messages=[{"role":"system","content":"You are a food-cost analyst..."},{"role":"user","content":df.to_csv(index=False)}])
     return resp.choices[0].message["content"].strip()
 
 #----------------------------------------------------------------------------#
 # Streamlit UI                                                                #
 #----------------------------------------------------------------------------#
 if HAS_STREAMLIT:
-    st.set_page_config(page_title="Food Cost App",page_icon="🍔",layout="wide")
+    st.set_page_config(page_title="Food Cost App", page_icon="🍔", layout="wide")
 
     if "tables" not in st.session_state:
         st.session_state["tables"] = {name: load_table(name) for name in TABLE_SPECS}
@@ -208,9 +208,9 @@ if HAS_STREAMLIT:
     elif menu == "Labor Shifts":
         st.title("⏱️ Labor Shifts")
         df = get_table("labor_shift")
-        ed = st.data_editor(df, num_rows="dynamic", use_container_width=True)
+        ad = st.data_editor(df, num_rows="dynamic", use_container_width=True)
         if st.button("Save Shifts"):
-            st.session_state["tables"]["labor_shift"] = ed
+            st.session_state["tables"]["labor_shift"] = ad
             persist("labor_shift")
             st.success("Saved")
 
