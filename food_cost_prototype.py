@@ -246,4 +246,3 @@ if __name__ == "__main__" and not HAS_STREAMLIT:
     calc = calculate_cost_columns(row.copy())
     assert calc["cost_per_gram"] == 0.02
     print("All tests passed")
-Overwrite with full UI + headless fallback prototype
