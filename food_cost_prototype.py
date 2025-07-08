@@ -11,7 +11,7 @@ from typing import Dict, List
 
 import pandas as pd
 
-# Streamlit & optional
+# Streamlit & fallback
 try:
     import streamlit as st
     HAS_STREAMLIT = True
@@ -20,7 +20,7 @@ except ModuleNotFoundError:
     class _DummyStreamlit:
         def __init__(self): self.sidebar=self; self.session_state={}; self.secrets={}
         def __getattr__(self, name): return _noop
-        def __call__(self,*a,**k): return None
+        def __call__(self, *args, **kwargs): return None
     st = _DummyStreamlit()
     HAS_STREAMLIT = False
 
@@ -45,69 +45,130 @@ TABLE_SPECS = {
     'inventory_txn': ['txn_id','date','ingredient_id','qty_grams_change','reason','note'],
     'labor_shift': ['shift_id','emp_email','start_time','end_time','hours','labor_cost'],
 }
-UNIT_TO_GRAMS={'lb':453.592,'oz':28.3495,'kg':1000,'g':1,'gal':3785.41,'ml':1,'l':1000}
+UNIT_TO_GRAMS = {'lb':453.592,'oz':28.3495,'kg':1000,'g':1,'gal':3785.41,'ml':1,'l':1000}
 
 # Data helpers
 
-def _table_path(name): return DATA_DIR/f"{name}.csv"
+def _table_path(name:str)->Path:
+    return DATA_DIR/f"{name}.csv"
 
-def load_table(name):
+def load_table(name:str)->pd.DataFrame:
     cols=TABLE_SPECS[name]
     path=_table_path(name)
     df=pd.read_csv(path) if path.exists() else pd.DataFrame(columns=cols)
     for c in cols:
-        if c not in df: df[c] = '' if isinstance(cols, list) and c in ['name','vendor','purchase_unit'] else 0
+        if c not in df.columns:
+            df[c] = '' if c in ['name','vendor','purchase_unit'] else 0
     return df[cols]
 
-def save_table(name,df): df.to_csv(_table_path(name), index=False)
 
-def calculate_cost_columns(row):
-    unit=row.get('purchase_unit',''); qty=float(row.get('purchase_qty',0) or 0);
-    price=float(row.get('purchase_price',0) or 0); yp=float(row.get('yield_percent',1) or 1)
+def save_table(name:str,df:pd.DataFrame)->None:
+    df.to_csv(_table_path(name),index=False)
+
+
+def calculate_cost_columns(row:pd.Series)->pd.Series:
+    unit=row.get('purchase_unit','')
+    qty=float(row.get('purchase_qty',0) or 0)
+    price=float(row.get('purchase_price',0) or 0)
+    yp=float(row.get('yield_percent',1) or 1)
     if yp>1: yp/=100
-    grams=qty*UNIT_TO_GRAMS.get(unit,1);
-    cpg=price/grams if grams else 0; nc=cpg/yp if yp else 0
-    row['cost_per_gram']=round(cpg,4); row['net_cost_per_gram']=round(nc,4)
-    row['last_updated']=datetime.utcnow().isoformat(); return row
+    grams=qty*UNIT_TO_GRAMS.get(unit,1)
+    cpg=price/grams if grams else 0
+    ncpg=cpg/yp if yp else 0
+    row['cost_per_gram']=round(cpg,4)
+    row['net_cost_per_gram']=round(ncpg,4)
+    row['last_updated']=datetime.utcnow().isoformat()
+    return row
 
-def current_stock():
-    inv=load_table('inventory_txn'); ing=load_table('ingredients')
+
+def current_stock()->pd.DataFrame:
+    inv=load_table('inventory_txn')
+    ing=load_table('ingredients')
     stock=inv.groupby('ingredient_id')['qty_grams_change'].sum().reset_index()
     stock.rename(columns={'ingredient_id':'item_id','qty_grams_change':'on_hand_grams'},inplace=True)
     df=ing.merge(stock,on='item_id',how='left').fillna({'on_hand_grams':0})
     return df[['item_id','name','par_level_grams','on_hand_grams']]
 
-# AI handler stub (detailed logic omitted for brevity)
-def ai_handle(text):
-    # existing parsing logic...
-    return "🤔 Command not recognized or AI not configured."
+# AI parse and multitask
+
+def ai_handle(text:str)->str:
+    t=text.lower().strip()
+    # 1) Add ingredients from recipe
+    if 'add ingredients' in t and 'from recipe' in t:
+        m=re.search(r'from recipe\s+"([^"]+)"',text,re.I)
+        name=m.group(1) if m else re.search(r'from recipe\s+(\w[\w\s]+)',text,re.I).group(1)
+        recipes=st.session_state.get('tables',{}).get('recipes',load_table('recipes'))
+        row=recipes[recipes['name'].str.lower()==name.strip().lower()]
+        if row.empty: return f"❌ Recipe '{name}' not found."
+        rid=row.iloc[0]['recipe_id']
+        ri=st.session_state.get('tables',{}).get('recipe_ingredients',load_table('recipe_ingredients'))
+        items=ri[ri['recipe_id']==rid]
+        ing_df=st.session_state.get('tables',{}).get('ingredients',load_table('ingredients'))
+        added=0
+        for _,rec in items.iterrows():
+            ingr=rec['ingredient_id']; grams=rec['qty_grams']
+            ing_name=ing_df[ing_df['item_id']==ingr]['name'].iloc[0] if ingr else ''
+            ex=ing_df[ing_df['name'].str.lower()==ing_name.lower()]
+            if ex.empty:
+                new={'item_id':f'NEW{len(ing_df)+1}','name':ing_name.title(),'purchase_unit':'','purchase_qty':grams,'purchase_price':0,'yield_percent':100,'vendor':'','par_level_grams':0,'lead_time_days':0}
+                ing_df=pd.concat([ing_df,pd.DataFrame([new])],ignore_index=True)
+                added+=1
+            else:
+                idx=ex.index[0]
+                if not ex.loc[idx,'purchase_unit']: ing_df.loc[idx,'purchase_unit']='g'
+                if not ex.loc[idx,'purchase_qty']: ing_df.loc[idx,'purchase_qty']=grams
+                if not ex.loc[idx,'yield_percent']: ing_df.loc[idx,'yield_percent']=100
+                added+=1
+        st.session_state['tables']['ingredients']=ing_df
+        save_table('ingredients',ing_df)
+        return f"✅ Added {added} ingredients from recipe '{name}'."
+    # 2) Shopping list
+    if 'shopping list' in t:
+        stock=current_stock()
+        low=stock[stock['on_hand_grams']<stock['par_level_grams']]
+        return '🛒 Shopping list: ' + ', '.join(low['name'].tolist()) if not low.empty else '🛒 No items below par level.'
+    # 3) Stock check
+    if t.startswith('how many') and 'left' in t:
+        nm=t.replace('how many','').replace('left','').strip()
+        row=current_stock()[lambda df:df['name'].str.lower()==nm]
+        if not row.empty: return f"{nm.title()} on hand: **{int(row.iloc[0]['on_hand_grams'])} g**"
+    # 4) Add purchase
+    m=re.match(r'add\s+(\d+[.,]?\d*)\s*(lb|oz|kg|g)\s+([\w\s]+)\s*@\s*\$?(\d+[.,]?\d*)',text.lower())
+    if m and HAS_STREAMLIT:
+        qty,unit,nm,pr=m.groups(); qty,pr=float(qty.replace(',','.')),float(pr.replace(',','.'))
+        df=st.session_state['tables']['ingredients']; ex=df[df['name'].str.lower()==nm.strip().lower()]
+        if ex.empty:
+            new={'item_id':f'NEW{len(df)+1}','name':nm.title(),'purchase_unit':unit,'purchase_qty':qty,'purchase_price':pr,'yield_percent':100}
+            df=pd.concat([df,pd.DataFrame([new])],ignore_index=True)
+        else:
+            idx=ex.index[0]; df.loc[idx,['purchase_unit','purchase_qty','purchase_price','yield_percent']]=[unit,qty,pr,100]
+        df=df.apply(calculate_cost_columns,axis=1)
+        st.session_state['tables']['ingredients']=df; save_table('ingredients',df)
+        return f"✅ Recorded {qty} {unit} {nm.title()} @ ${pr}"
+    # 5) GPT fallback
+    if HAS_OPENAI and openai.api_key:
+        resp=openai.ChatCompletion.create(model='gpt-4o',messages=[{'role':'system','content':'You are a food-truck cost app assistant.'},{'role':'user','content':text}])
+        return resp.choices[0].message['content'].strip()
+    return "🤔 Sorry, I couldn’t parse that."
+
+# Transcription helper
 
 def transcribe_audio(audio_file):
-    return openai.Audio.transcribe('whisper-1', audio_file) if HAS_OPENAI and audio_file else ''
+    return openai.Audio.transcribe('whisper-1',audio_file) if HAS_OPENAI and audio_file else ''
 
 # Streamlit UI
 if HAS_STREAMLIT:
-    st.set_page_config(page_title='Food Cost App', layout='wide')
-    # load tables once
+    st.set_page_config(page_title='Food Cost App',layout='wide')
     if 'tables' not in st.session_state:
-        st.session_state['tables']={name:load_table(name) for name in TABLE_SPECS}
+        st.session_state['tables']={n:load_table(n) for n in TABLE_SPECS}
         st.session_state['chat_log']=[]
-
-    def get_table(name): return st.session_state['tables'][name]
-    def persist(name): save_table(name,get_table(name))
-
+    def get_table(n): return st.session_state['tables'][n]
+    def persist(n): save_table(n,get_table(n))
     pages=['Ingredients','Recipes','Recipe Ingredients','Inventory','Labor','AI Insights','AI Assistant','Shopping List']
     page=st.sidebar.selectbox('Navigation',pages)
-
     if page=='Ingredients':
-        st.title('🧾 Ingredients')
-        df=get_table('ingredients'); ed=st.data_editor(df,num_rows='dynamic',use_container_width=True)
+        st.title('🧾 Ingredients'); df=get_table('ingredients'); ed=st.data_editor(df,num_rows='dynamic',use_container_width=True)
         if st.button('Save'): ed=ed.apply(calculate_cost_columns,axis=1); st.session_state['tables']['ingredients']=ed; persist('ingredients'); st.success('Saved')
-    elif page=='Recipes':
-        st.title('📖 Recipes')
-        df=get_table('recipes'); ed=st.data_editor(df,num_rows='dynamic',use_container_width=True)
-        if st.button('Save'): st.session_state['tables']['recipes']=ed; persist('recipes'); st.success('Saved')
-    # other pages similar...
     elif page=='AI Assistant':
         st.title('🤖 Assistant')
         for msg in st.session_state['chat_log']: st.chat_message(msg['role']).markdown(msg['text'])
@@ -117,8 +178,5 @@ if HAS_STREAMLIT:
     elif page=='Shopping List':
         st.write(current_stock().query('on_hand_grams<par_level_grams'))
     st.sidebar.markdown('---'); st.sidebar.write('Made with ❤️')
-
-# tests
-if __name__=='__main__':
-    df=load_table('ingredients'); assert isinstance(df,pd.DataFrame)
-    print('Tests passed.')
+# Self-tests
+if __name__=='__main__': df=load_table('ingredients'); assert isinstance(df,pd.DataFrame); print('Tests passed.')
