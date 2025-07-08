@@ -99,12 +99,15 @@ def current_stock() -> pd.DataFrame:
     df = ing.merge(stock, on='item_id', how='left').fillna({'on_hand_grams':0})
     return df[['item_id','name','par_level_grams','on_hand_grams']]
 
-# AI parser & multitask
+# AI parse and multitask
 
 def ai_handle(text: str) -> str:
     t = text.lower().strip()
-    # 1) Add ingredients from any recipe
-    m = re.match(r'add ingredients from\s+"?(.+?)"?(?:\s+to ingredients)?', text, re.I)
+    # 1) Add ingredients from any recipe (flexible commands)
+    # e.g., "add ingredients from Carne Asada" or "add recipe Carne Asada to ingredients"
+    m1 = re.match(r'add ingredients from\s+"?(.+?)"?$', text, re.I)
+    m2 = re.match(r'add recipe\s+"?(.+?)"?\s+to ingredients$', text, re.I)
+    m = m1 or m2
     if m:
         name = m.group(1).strip()
         recipes = st.session_state['tables'].get('recipes', load_table('recipes'))
@@ -137,12 +140,12 @@ def ai_handle(text: str) -> str:
                 ing_df = pd.concat([ing_df, pd.DataFrame([new])], ignore_index=True)
             else:
                 idx = ex.index[0]
-                if not ing_df.at[idx,'purchase_unit']:
-                    ing_df.at[idx,'purchase_unit'] = 'g'
-                if not ing_df.at[idx,'purchase_qty']:
-                    ing_df.at[idx,'purchase_qty'] = grams
-                if not ing_df.at[idx,'yield_percent']:
-                    ing_df.at[idx,'yield_percent'] = 100
+                if not ing_df.at[idx, 'purchase_unit']:
+                    ing_df.at[idx, 'purchase_unit'] = 'g'
+                if not ing_df.at[idx, 'purchase_qty']:
+                    ing_df.at[idx, 'purchase_qty'] = grams
+                if not ing_df.at[idx, 'yield_percent']:
+                    ing_df.at[idx, 'yield_percent'] = 100
             added += 1
         st.session_state['tables']['ingredients'] = ing_df
         save_table('ingredients', ing_df)
@@ -154,34 +157,34 @@ def ai_handle(text: str) -> str:
         return '🛒 Shopping list: ' + ', '.join(low['name'].tolist()) if not low.empty else '🛒 No items below par level.'
     # 3) Stock check
     if t.startswith('how many') and 'left' in t:
-        nm = t.replace('how many','').replace('left','').strip()
+        nm = t.replace('how many', '').replace('left', '').strip()
         row = current_stock()[lambda df: df['name'].str.lower() == nm]
         if not row.empty:
             return f"{nm.title()} on hand: **{int(row.iloc[0]['on_hand_grams'])} g**"
     # 4) Add purchase
-    m2 = re.match(r'add\s+(\d+[.,]?\d*)\s*(lb|oz|kg|g)\s+([\w\s]+)\s*@\s*\$?(\d+[.,]?\d*)', text.lower())
-    if m2 and HAS_STREAMLIT:
-        qty, unit, nm, pr = m2.groups()
-        qty, pr = float(qty.replace(',','.')), float(pr.replace(',','.'))
-        df = st.session_state['tables']['ingredients']
-        ex = df[df['name'].str.lower() == nm.strip().lower()]
-        if ex.empty:
+    m_add = re.match(r'add\s+(\d+[.,]?\d*)\s*(lb|oz|kg|g)\s+([\w\s]+)\s*@\s*\$?(\d+[.,]?\d*)', text.lower())
+    if m_add and HAS_STREAMLIT:
+        qty, unit, nm2, pr = m_add.groups()
+        qty, pr = float(qty.replace(',', '.')), float(pr.replace(',', '.'))
+        df_ing = st.session_state['tables']['ingredients']
+        ex2 = df_ing[df_ing['name'].str.lower() == nm2.strip().lower()]
+        if ex2.empty:
             new = {
-                'item_id': f'NEW{len(df)+1}',
-                'name': nm.title(),
+                'item_id': f'NEW{len(df_ing)+1}',
+                'name': nm2.title(),
                 'purchase_unit': unit,
                 'purchase_qty': qty,
                 'purchase_price': pr,
                 'yield_percent': 100
             }
-            df = pd.concat([df, pd.DataFrame([new])], ignore_index=True)
+            df_ing = pd.concat([df_ing, pd.DataFrame([new])], ignore_index=True)
         else:
-            idx = ex.index[0]
-            df.loc[idx, ['purchase_unit','purchase_qty','purchase_price','yield_percent']] = [unit,qty,pr,100]
-        df = df.apply(calculate_cost_columns, axis=1)
-        st.session_state['tables']['ingredients'] = df
-        save_table('ingredients', df)
-        return f"✅ Recorded {qty} {unit} {nm.title()} @ ${pr}"
+            idx2 = ex2.index[0]
+            df_ing.loc[idx2, ['purchase_unit','purchase_qty','purchase_price','yield_percent']] = [unit, qty, pr, 100]
+        df_ing = df_ing.apply(calculate_cost_columns, axis=1)
+        st.session_state['tables']['ingredients'] = df_ing
+        save_table('ingredients', df_ing)
+        return f"✅ Recorded {qty} {unit} {nm2.title()} @ ${pr}"
     # 5) GPT fallback
     if HAS_OPENAI and openai.api_key:
         resp = openai.ChatCompletion.create(
