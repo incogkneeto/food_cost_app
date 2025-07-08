@@ -100,7 +100,6 @@ def current_stock() -> pd.DataFrame:
 def ai_handle(text: str) -> str:
     t = text.lower().strip()
     # 1) Add ingredients from any recipe
-    # Flexible: match "add the ingredients from ..." or "add recipe ... to ingredients"
     m = re.search(r'add(?: the)? (?:ingredients from|recipe)\s+"?(.+?)"?(?: to ingredients)?', text, re.I)
     if m:
         name = m.group(1).strip()
@@ -121,14 +120,10 @@ def ai_handle(text: str) -> str:
             ex = ing_df[ing_df['name'].str.lower() == ing_name.lower()]
             if ex.empty:
                 new = {
-                    'item_id': f'NEW{len(ing_df)+1}',
-                    'name': ing_name.title(),
-                    'purchase_unit': '',
-                    'purchase_qty': grams,
-                    'purchase_price': 0,
-                    'yield_percent': 100,
-                    'vendor': '',
-                    'par_level_grams': 0,
+                    'item_id': f'NEW{len(ing_df)+1}', 'name': ing_name.title(),
+                    'purchase_unit': '',      'purchase_qty': grams,
+                    'purchase_price': 0,       'yield_percent': 100,
+                    'vendor': '',             'par_level_grams': 0,
                     'lead_time_days': 0
                 }
                 ing_df = pd.concat([ing_df, pd.DataFrame([new])], ignore_index=True)
@@ -144,44 +139,75 @@ def ai_handle(text: str) -> str:
         st.session_state['tables']['ingredients'] = ing_df
         save_table('ingredients', ing_df)
         return f"✅ Added {added} ingredients from recipe '{name}' to Ingredients list."
-    # 2) Purchase command: find qty-unit-name@price anywhere
-    m2 = re.search(r'add.*?(\d+[.,]?\d*)\s*(lb|oz|kg|g)\s+([\w ]+?)\s*@\s*\$?(\d+[.,]?\d*)', text.lower())
-    if m2 and HAS_STREAMLIT:
-        qty, unit, nm, pr = m2.groups()
-        qty, pr = float(qty.replace(',', '.')), float(pr.replace(',', '.'))
-        ing_df = st.session_state['tables']['ingredients']
-        ex = ing_df[ing_df['name'].str.lower() == nm.strip().lower()]
-        if ex.empty:
-            new = {'item_id': f'NEW{len(ing_df)+1}', 'name': nm.title(), 'purchase_unit': unit,
-                   'purchase_qty': qty, 'purchase_price': pr, 'yield_percent': 100}
-            ing_df = pd.concat([ing_df, pd.DataFrame([new])], ignore_index=True)
+
+    # 2) Add purchase – two patterns:
+    if HAS_STREAMLIT:
+        # a) qty-first: “add 25 lb tomatoes @ 18.99”
+        m_qty = re.search(r'add.*?(\d+[.,]?\d*)\s*(lb|oz|kg|g)\s+([\w ]+?)\s*@\s*\$?(\d+[.,]?\d*)', t)
+        if m_qty:
+            qty, unit, nm, pr = m_qty.groups()
+            qty, pr = float(qty.replace(',','.')), float(pr.replace(',','.'))
         else:
-            idx = ex.index[0]
-            ing_df.loc[idx, ['purchase_unit','purchase_qty','purchase_price','yield_percent']] = [unit, qty, pr, 100]
-        ing_df = ing_df.apply(calculate_cost_columns, axis=1)
-        st.session_state['tables']['ingredients'] = ing_df
-        save_table('ingredients', ing_df)
-        return f"✅ Recorded {qty} {unit} {nm.title()} @ ${pr}"
+            # b) name-first: “add tomatoes to my ingredients 25 lb @ 18.99”
+            m_name = re.search(
+                r'add\s+([\w ]+?)\s+(?:to (?:my )?ingredients)?\s*(\d+[.,]?\d*)\s*'
+                r'(lb|oz|kg|g)\s*@\s*\$?(\d+[.,]?\d*)',
+                t
+            )
+            if not m_name:
+                m_qty = None; m_name = None
+            else:
+                nm, qty, unit, pr = m_name.groups()
+                qty, pr = float(qty.replace(',','.')), float(pr.replace(',','.'))
+
+        # if either matched:
+        if (HAS_STREAMLIT and (m_qty or m_name)):
+            ing_df = st.session_state['tables']['ingredients']
+            ex = ing_df[ing_df['name'].str.lower() == nm.strip().lower()]
+            if ex.empty:
+                new = {
+                    'item_id': f'NEW{len(ing_df)+1}', 'name': nm.title(),
+                    'purchase_unit': unit,       'purchase_qty': qty,
+                    'purchase_price': pr,        'yield_percent': 100
+                }
+                ing_df = pd.concat([ing_df, pd.DataFrame([new])], ignore_index=True)
+            else:
+                idx = ex.index[0]
+                ing_df.loc[idx, ['purchase_unit','purchase_qty','purchase_price','yield_percent']] = [unit, qty, pr, 100]
+            ing_df = ing_df.apply(calculate_cost_columns, axis=1)
+            st.session_state['tables']['ingredients'] = ing_df
+            save_table('ingredients', ing_df)
+            return f"✅ Recorded {qty} {unit} {nm.title()} @ ${pr}"
+
     # 3) Shopping list
     if 'shopping list' in t:
         stock = current_stock()
         low = stock[stock['on_hand_grams'] < stock['par_level_grams']]
-        return '🛒 Shopping list: ' + ', '.join(low['name'].tolist()) if not low.empty else '🛒 No items below par level.'
+        return (
+            "🛒 Shopping list: " + ", ".join(low['name'].tolist())
+            if not low.empty else "🛒 No items below par level."
+        )
+
     # 4) Stock check
     if t.startswith('how many') and 'left' in t:
         nm = t.replace('how many','').replace('left','').strip()
         row = current_stock()[lambda df: df['name'].str.lower() == nm]
         if not row.empty:
             return f"{nm.title()} on hand: **{int(row.iloc[0]['on_hand_grams'])} g**"
+
     # 5) GPT fallback
     if HAS_OPENAI and openai.api_key:
         resp = openai.ChatCompletion.create(
             model='gpt-4o',
-            messages=[{'role':'system','content':'You are a food-truck cost app assistant.'},
-                      {'role':'user','content':text}]
+            messages=[
+                {'role':'system','content':'You are a food-truck cost app assistant.'},
+                {'role':'user','content':text}
+            ]
         )
         return resp.choices[0].message['content'].strip()
+
     return "🤔 Sorry, I couldn’t parse that."
+
 
 # Transcribe helper
 
