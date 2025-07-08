@@ -104,32 +104,22 @@ def ai_handle(text:str)->str:
         ing_df=st.session_state.get('tables',{}).get('ingredients',load_table('ingredients'))
         added=0
         for _,rec in items.iterrows():
-            item_id=rec['ingredient_id']
-            grams=rec['qty_grams']
+            item_id=rec['ingredient_id']; grams=rec['qty_grams']
             names=ing_df.loc[ing_df['item_id']==item_id,'name'].tolist()
             ing_name=names[0] if names else ''
             ex=ing_df[ing_df['name'].str.lower()==ing_name.lower()]
             if ex.empty:
                 new={
-                    'item_id':f'NEW{len(ing_df)+1}',
-                    'name':ing_name.title(),
-                    'purchase_unit':'',
-                    'purchase_qty':grams,
-                    'purchase_price':0,
-                    'yield_percent':100,
-                    'vendor':'',
-                    'par_level_grams':0,
-                    'lead_time_days':0
+                    'item_id':f'NEW{len(ing_df)+1}', 'name':ing_name.title(), 'purchase_unit':'',
+                    'purchase_qty':grams,'purchase_price':0,'yield_percent':100,'vendor':'',
+                    'par_level_grams':0,'lead_time_days':0
                 }
                 ing_df=pd.concat([ing_df,pd.DataFrame([new])],ignore_index=True)
             else:
                 idx=ex.index[0]
-                if not ing_df.at[idx,'purchase_unit']:
-                    ing_df.at[idx,'purchase_unit']='g'
-                if not ing_df.at[idx,'purchase_qty']:
-                    ing_df.at[idx,'purchase_qty']=grams
-                if not ing_df.at[idx,'yield_percent']:
-                    ing_df.at[idx,'yield_percent']=100
+                if not ing_df.at[idx,'purchase_unit']: ing_df.at[idx,'purchase_unit']='g'
+                if not ing_df.at[idx,'purchase_qty']: ing_df.at[idx,'purchase_qty']=grams
+                if not ing_df.at[idx,'yield_percent']: ing_df.at[idx,'yield_percent']=100
             added+=1
         st.session_state['tables']['ingredients']=ing_df
         save_table('ingredients',ing_df)
@@ -149,10 +139,10 @@ def ai_handle(text:str)->str:
     m2=re.match(r'add\s+(\d+[.,]?\d*)\s*(lb|oz|kg|g)\s+([\w\s]+)\s*@\s*\$?(\d+[.,]?\d*)',text.lower())
     if m2 and HAS_STREAMLIT:
         qty,unit,nm,pr=m2.groups(); qty,pr=float(qty.replace(',','.')),float(pr.replace(',','.'))
-        df=st.session_state['tables']['ingredients']
-        ex=df[df['name'].str.lower()==nm.strip().lower()]
+        df=st.session_state['tables']['ingredients']; ex=df[df['name'].str.lower()==nm.strip().lower()]
         if ex.empty:
-            new={'item_id':f'NEW{len(df)+1}','name':nm.title(),'purchase_unit':unit,'purchase_qty':qty,'purchase_price':pr,'yield_percent':100}
+            new={'item_id':f'NEW{len(df)+1}','name':nm.title(),'purchase_unit':unit,
+                 'purchase_qty':qty,'purchase_price':pr,'yield_percent':100}
             df=pd.concat([df,pd.DataFrame([new])],ignore_index=True)
         else:
             idx=ex.index[0]
@@ -162,10 +152,7 @@ def ai_handle(text:str)->str:
         return f"✅ Recorded {qty} {unit} {nm.title()} @ ${pr}"
     # 5) GPT fallback
     if HAS_OPENAI and openai.api_key:
-        resp=openai.ChatCompletion.create(
-            model='gpt-4o',
-            messages=[{'role':'system','content':'You are a food-truck cost app assistant.'},{'role':'user','content':text}]
-        )
+        resp=openai.ChatCompletion.create(model='gpt-4o',messages=[{'role':'system','content':'You are a food-truck cost app assistant.'},{'role':'user','content':text}])
         return resp.choices[0].message['content'].strip()
     return "🤔 Sorry, I couldn’t parse that."
 
@@ -185,16 +172,51 @@ if HAS_STREAMLIT:
     pages=['Ingredients','Recipes','Recipe Ingredients','Inventory','Labor','AI Insights','AI Assistant','Shopping List']
     page=st.sidebar.selectbox('Navigation',pages)
     if page=='Ingredients':
-        st.title('🧾 Ingredients'); df=get_table('ingredients'); ed=st.data_editor(df,num_rows='dynamic',use_container_width=True)
-        if st.button('Save'): ed=ed.apply(calculate_cost_columns,axis=1); st.session_state['tables']['ingredients']=ed; persist('ingredients'); st.success('Saved')
+        st.title('🧾 Ingredients')
+        df=get_table('ingredients')
+        ed=st.data_editor(df,num_rows='dynamic',use_container_width=True)
+        if st.button('Save'): ed=ed.apply(calculate_cost_columns,axis=1); persist('ingredients'); st.success('Saved')
+    elif page=='Recipes':
+        st.title('📖 Recipes')
+        df=get_table('recipes')
+        ed=st.data_editor(df,num_rows='dynamic',use_container_width=True)
+        if st.button('Save'): persist('recipes'); st.success('Recipes saved')
+    elif page=='Recipe Ingredients':
+        st.title('📋 Recipe Ingredients')
+        df=get_table('recipe_ingredients')
+        ed=st.data_editor(df,num_rows='dynamic',use_container_width=True)
+        if st.button('Save'): persist('recipe_ingredients'); st.success('Recipe ingredients saved')
+    elif page=='Inventory':
+        st.title('📦 Inventory Transactions')
+        df=get_table('inventory_txn')
+        ed=st.data_editor(df,num_rows='dynamic',use_container_width=True)
+        if st.button('Save'): persist('inventory_txn'); st.success('Inventory transactions saved')
+    elif page=='Labor':
+        st.title('⏱️ Labor Shifts')
+        df=get_table('labor_shift')
+        ed=st.data_editor(df,num_rows='dynamic',use_container_width=True)
+        if st.button('Save'): persist('labor_shift'); st.success('Labor shifts saved')
+    elif page=='AI Insights':
+        st.title('🤖 AI Insights')
+        df=get_table('ingredients')
+        if st.button('Generate Insights'):
+            insights=ai_handle('analyze costs')
+            st.markdown(insights)
     elif page=='AI Assistant':
         st.title('🤖 Assistant')
-        for msg in st.session_state['chat_log']: st.chat_message(msg['role']).markdown(msg['text'])
+        for msg in st.session_state['chat_log']:
+            st.chat_message(msg['role']).markdown(msg['text'])
         audio=st.file_uploader('Voice command',type=['wav','mp3'])
         prompt=transcribe_audio(audio) if audio else st.chat_input('Type your command')
-        if prompt: st.session_state['chat_log'].append({'role':'user','text':prompt}); res=ai_handle(prompt); st.session_state['chat_log'].append({'role':'assistant','text':res})
+        if prompt:
+            st.session_state['chat_log'].append({'role':'user','text':prompt})
+            res=ai_handle(prompt)
+            st.session_state['chat_log'].append({'role':'assistant','text':res})
     elif page=='Shopping List':
-        st.write(current_stock().query('on_hand_grams<par_level_grams'))
+        st.title('🛒 Shopping List')
+        stock=current_stock()
+        low=stock[stock['on_hand_grams']<stock['par_level_grams']]
+        st.dataframe(low[['name','on_hand_grams','par_level_grams']])
     st.sidebar.markdown('---'); st.sidebar.write('Made with ❤️')
 # Self-tests
 if __name__=='__main__': df=load_table('ingredients'); assert isinstance(df,pd.DataFrame); print('Tests passed.')
