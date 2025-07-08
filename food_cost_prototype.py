@@ -61,10 +61,8 @@ def load_table(name:str)->pd.DataFrame:
             df[c] = '' if c in ['name','vendor','purchase_unit'] else 0
     return df[cols]
 
-
 def save_table(name:str,df:pd.DataFrame)->None:
     df.to_csv(_table_path(name),index=False)
-
 
 def calculate_cost_columns(row:pd.Series)->pd.Series:
     unit=row.get('purchase_unit','')
@@ -80,7 +78,6 @@ def calculate_cost_columns(row:pd.Series)->pd.Series:
     row['last_updated']=datetime.utcnow().isoformat()
     return row
 
-
 def current_stock()->pd.DataFrame:
     inv=load_table('inventory_txn')
     ing=load_table('ingredients')
@@ -93,35 +90,50 @@ def current_stock()->pd.DataFrame:
 
 def ai_handle(text:str)->str:
     t=text.lower().strip()
-    # 1) Add ingredients from recipe
-    if 'add ingredients' in t and 'from recipe' in t:
-        m=re.search(r'from recipe\s+"([^"]+)"',text,re.I)
-        name=m.group(1) if m else re.search(r'from recipe\s+(\w[\w\s]+)',text,re.I).group(1)
+    # 1) Add ingredients from any recipe
+    m = re.match(r'add ingredients from\s+"?(.+?)"?(?:\s+to ingredients)?', text, re.I)
+    if m:
+        name=m.group(1).strip()
         recipes=st.session_state.get('tables',{}).get('recipes',load_table('recipes'))
-        row=recipes[recipes['name'].str.lower()==name.strip().lower()]
-        if row.empty: return f"❌ Recipe '{name}' not found."
+        row=recipes[recipes['name'].str.lower()==name.lower()]
+        if row.empty:
+            return f"❌ Recipe '{name}' not found."
         rid=row.iloc[0]['recipe_id']
         ri=st.session_state.get('tables',{}).get('recipe_ingredients',load_table('recipe_ingredients'))
         items=ri[ri['recipe_id']==rid]
         ing_df=st.session_state.get('tables',{}).get('ingredients',load_table('ingredients'))
         added=0
         for _,rec in items.iterrows():
-            ingr=rec['ingredient_id']; grams=rec['qty_grams']
-            ing_name=ing_df[ing_df['item_id']==ingr]['name'].iloc[0] if ingr else ''
+            item_id=rec['ingredient_id']
+            grams=rec['qty_grams']
+            names=ing_df.loc[ing_df['item_id']==item_id,'name'].tolist()
+            ing_name=names[0] if names else ''
             ex=ing_df[ing_df['name'].str.lower()==ing_name.lower()]
             if ex.empty:
-                new={'item_id':f'NEW{len(ing_df)+1}','name':ing_name.title(),'purchase_unit':'','purchase_qty':grams,'purchase_price':0,'yield_percent':100,'vendor':'','par_level_grams':0,'lead_time_days':0}
+                new={
+                    'item_id':f'NEW{len(ing_df)+1}',
+                    'name':ing_name.title(),
+                    'purchase_unit':'',
+                    'purchase_qty':grams,
+                    'purchase_price':0,
+                    'yield_percent':100,
+                    'vendor':'',
+                    'par_level_grams':0,
+                    'lead_time_days':0
+                }
                 ing_df=pd.concat([ing_df,pd.DataFrame([new])],ignore_index=True)
-                added+=1
             else:
                 idx=ex.index[0]
-                if not ex.loc[idx,'purchase_unit']: ing_df.loc[idx,'purchase_unit']='g'
-                if not ex.loc[idx,'purchase_qty']: ing_df.loc[idx,'purchase_qty']=grams
-                if not ex.loc[idx,'yield_percent']: ing_df.loc[idx,'yield_percent']=100
-                added+=1
+                if not ing_df.at[idx,'purchase_unit']:
+                    ing_df.at[idx,'purchase_unit']='g'
+                if not ing_df.at[idx,'purchase_qty']:
+                    ing_df.at[idx,'purchase_qty']=grams
+                if not ing_df.at[idx,'yield_percent']:
+                    ing_df.at[idx,'yield_percent']=100
+            added+=1
         st.session_state['tables']['ingredients']=ing_df
         save_table('ingredients',ing_df)
-        return f"✅ Added {added} ingredients from recipe '{name}'."
+        return f"✅ Added {added} ingredients from recipe '{name}' to Ingredients list."
     # 2) Shopping list
     if 'shopping list' in t:
         stock=current_stock()
@@ -131,27 +143,33 @@ def ai_handle(text:str)->str:
     if t.startswith('how many') and 'left' in t:
         nm=t.replace('how many','').replace('left','').strip()
         row=current_stock()[lambda df:df['name'].str.lower()==nm]
-        if not row.empty: return f"{nm.title()} on hand: **{int(row.iloc[0]['on_hand_grams'])} g**"
+        if not row.empty:
+            return f"{nm.title()} on hand: **{int(row.iloc[0]['on_hand_grams'])} g**"
     # 4) Add purchase
-    m=re.match(r'add\s+(\d+[.,]?\d*)\s*(lb|oz|kg|g)\s+([\w\s]+)\s*@\s*\$?(\d+[.,]?\d*)',text.lower())
-    if m and HAS_STREAMLIT:
-        qty,unit,nm,pr=m.groups(); qty,pr=float(qty.replace(',','.')),float(pr.replace(',','.'))
-        df=st.session_state['tables']['ingredients']; ex=df[df['name'].str.lower()==nm.strip().lower()]
+    m2=re.match(r'add\s+(\d+[.,]?\d*)\s*(lb|oz|kg|g)\s+([\w\s]+)\s*@\s*\$?(\d+[.,]?\d*)',text.lower())
+    if m2 and HAS_STREAMLIT:
+        qty,unit,nm,pr=m2.groups(); qty,pr=float(qty.replace(',','.')),float(pr.replace(',','.'))
+        df=st.session_state['tables']['ingredients']
+        ex=df[df['name'].str.lower()==nm.strip().lower()]
         if ex.empty:
             new={'item_id':f'NEW{len(df)+1}','name':nm.title(),'purchase_unit':unit,'purchase_qty':qty,'purchase_price':pr,'yield_percent':100}
             df=pd.concat([df,pd.DataFrame([new])],ignore_index=True)
         else:
-            idx=ex.index[0]; df.loc[idx,['purchase_unit','purchase_qty','purchase_price','yield_percent']]=[unit,qty,pr,100]
+            idx=ex.index[0]
+            df.loc[idx,['purchase_unit','purchase_qty','purchase_price','yield_percent']]=[unit,qty,pr,100]
         df=df.apply(calculate_cost_columns,axis=1)
         st.session_state['tables']['ingredients']=df; save_table('ingredients',df)
         return f"✅ Recorded {qty} {unit} {nm.title()} @ ${pr}"
     # 5) GPT fallback
     if HAS_OPENAI and openai.api_key:
-        resp=openai.ChatCompletion.create(model='gpt-4o',messages=[{'role':'system','content':'You are a food-truck cost app assistant.'},{'role':'user','content':text}])
+        resp=openai.ChatCompletion.create(
+            model='gpt-4o',
+            messages=[{'role':'system','content':'You are a food-truck cost app assistant.'},{'role':'user','content':text}]
+        )
         return resp.choices[0].message['content'].strip()
     return "🤔 Sorry, I couldn’t parse that."
 
-# Transcription helper
+# Transcribe helper
 
 def transcribe_audio(audio_file):
     return openai.Audio.transcribe('whisper-1',audio_file) if HAS_OPENAI and audio_file else ''
