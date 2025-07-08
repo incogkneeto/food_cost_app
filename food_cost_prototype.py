@@ -27,6 +27,10 @@ except ModuleNotFoundError:
 try:
     import openai
     HAS_OPENAI=True
+    # Load API key from environment or Streamlit secrets
+    openai.api_key = os.getenv("OPENAI_API_KEY") or (
+        st.secrets.get("OPENAI_API_KEY") if HAS_STREAMLIT and "OPENAI_API_KEY" in getattr(st, 'secrets', {}) else None
+    )
 except ModuleNotFoundError:
     openai=None; HAS_OPENAI=False
 
@@ -113,7 +117,7 @@ def ai_handle(text: str) -> str:
         # get recipe ingredients
         ri_df = st.session_state["tables"]["recipe_ingredients"]
         items = ri_df[ri_df['recipe_id'] == rid]
-        ing_df = st.session_state["tables"]["ingredients"]
+        ing_df = st.session_state["tables"]["ingredients"] if "ingredients" in st.session_state.get("tables",{}) else load_table("ingredients")
         added = 0
         for _, rec in items.iterrows():
             # determine name and grams
@@ -184,7 +188,7 @@ def ai_handle(text: str) -> str:
         save_table('ingredients', df)
         return f"✅ Recorded {qty} {unit} {nm.title()} @ ${pr}"
     # 6) GPT fallback
-    if HAS_OPENAI and os.getenv('OPENAI_API_KEY'):
+    if HAS_OPENAI and os.getenv('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'):
         resp = openai.ChatCompletion.create(
             model='gpt-4o',
             messages=[{'role':'system','content':'You are a food-truck cost app assistant.'},{'role':'user','content':text}]
