@@ -188,7 +188,7 @@ def ai_handle(text: str) -> str:
         save_table('ingredients', df)
         return f"✅ Recorded {qty} {unit} {nm.title()} @ ${pr}"
     # 6) GPT fallback
-    if HAS_OPENAI and os.getenv('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'):
+    if HAS_OPENAI and os.getenv('OPENAI_API_KEY'):
         resp = openai.ChatCompletion.create(
             model='gpt-4o',
             messages=[{'role':'system','content':'You are a food-truck cost app assistant.'},{'role':'user','content':text}]
